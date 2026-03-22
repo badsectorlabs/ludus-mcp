@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { Catalog, type OperationDetail } from "./catalog.js";
+import { Catalog } from "./catalog.js";
 import { LudusClient } from "./client.js";
 
 // ── Input schemas ─────────────────────────────────────────────────────
@@ -82,14 +82,12 @@ const DescribeOperationOutputSchema = z.object({
   responses: z.array(z.any()).optional(),
 });
 
-// ── Server wrapper with hot-swappable catalog ───────────────────────
+// ── Server factory ────────────────────────────────────────────────────
 
-export interface LudusMcpServer extends McpServer {
-  /** Replace the catalog at runtime (e.g. after fetching remote spec). */
+export interface LudusMcpServer {
+  server: McpServer;
   updateCatalog(newCatalog: Catalog): void;
 }
-
-// ── Server factory ────────────────────────────────────────────────────
 
 export function createMcpServer(
   initialCatalog: Catalog,
@@ -179,36 +177,23 @@ export function createMcpServer(
         };
       }
 
-      let detail: OperationDetail | undefined = catalog.getDetail(id);
-
+      const detail = catalog.getDetail(id);
       if (!detail) {
-        // Fall back to minimal detail from operation list (e.g. fallback mode).
-        const op = catalog.get(id);
-        if (!op) {
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text",
-                text: `Unknown operation_id "${id}"; use list_ludus_operations to discover available operations`,
-              },
-            ],
-          };
-        }
-        detail = {
-          id: op.id,
-          method: op.method,
-          path: op.path,
-          summary: op.summary,
-          description: op.description,
-          tags: op.tags,
-          deprecated: op.deprecated,
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Unknown operation_id "${id}"; use list_ludus_operations to discover available operations`,
+            },
+          ],
         };
       }
 
+      const json = JSON.stringify(detail, null, 2);
       return {
-        content: [{ type: "text", text: JSON.stringify(detail, null, 2) }],
-        structuredContent: JSON.parse(JSON.stringify(detail)),
+        content: [{ type: "text", text: json }],
+        structuredContent: JSON.parse(json),
       };
     },
   );
@@ -299,12 +284,12 @@ export function createMcpServer(
     },
   );
 
-  const ludusMcpServer = server as LudusMcpServer;
-  ludusMcpServer.updateCatalog = (newCatalog: Catalog) => {
-    catalog = newCatalog;
+  return {
+    server,
+    updateCatalog(newCatalog: Catalog) {
+      catalog = newCatalog;
+    },
   };
-
-  return ludusMcpServer;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────

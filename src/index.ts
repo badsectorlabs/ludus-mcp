@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   let catalog = await loadCatalog("", apiKey);
 
   const client = new LudusClient(url, apiKey);
-  const server = createMcpServer(catalog, client);
+  const { server, updateCatalog } = createMcpServer(catalog, client);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -62,7 +62,7 @@ async function main(): Promise<void> {
   const specUrl = `${url}/api/v2/openapi`;
   try {
     const remoteCatalog = await loadCatalog(specUrl, apiKey);
-    server.updateCatalog(remoteCatalog);
+    updateCatalog(remoteCatalog);
     console.error(
       `ludus-mcp catalog upgraded (source: ${remoteCatalog.source()}, operations: ${remoteCatalog.operations().length})`,
     );

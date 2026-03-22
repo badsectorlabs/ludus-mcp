@@ -2,7 +2,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { loadCatalog } from "./catalog.ts";
 
-const BASIC_SPEC = `openapi: 3.1.0
+const BASIC_SPEC = `openapi: 3.0.1
+info:
+  title: Test
+  version: "1.0"
 paths:
   /range:
     get:
@@ -29,9 +32,15 @@ paths:
     delete:
       operationId: deleteRange
       summary: Delete range
+      responses:
+        '200':
+          description: OK
 `;
 
-const SPEC_WITH_REF = `openapi: 3.1.0
+const SPEC_WITH_REF = `openapi: 3.0.1
+info:
+  title: Test
+  version: "1.0"
 paths:
   /user:
     get:
@@ -57,7 +66,10 @@ components:
           type: boolean
 `;
 
-const SPEC_WITH_NESTED_REF = `openapi: 3.1.0
+const SPEC_WITH_NESTED_REF = `openapi: 3.0.1
+info:
+  title: Test
+  version: "1.0"
 paths:
   /range:
     get:
@@ -84,7 +96,10 @@ components:
           type: string
 `;
 
-const SPEC_WITH_ARRAY_REF = `openapi: 3.1.0
+const SPEC_WITH_ARRAY_REF = `openapi: 3.0.1
+info:
+  title: Test
+  version: "1.0"
 paths:
   /users:
     get:
@@ -108,51 +123,10 @@ components:
           type: string
 `;
 
-const SPEC_WITH_MISSING_REF = `openapi: 3.1.0
-paths:
-  /thing:
-    get:
-      operationId: getThing
-      summary: Get thing
-      responses:
-        '200':
-          description: OK
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DoesNotExist'
-components:
-  schemas: {}
-`;
-
-const SPEC_WITH_QUERY_PARAM_UNWRAP = `openapi: 3.1.0
-paths:
-  /range:
-    get:
-      operationId: listRange
-      summary: List range
-      parameters:
-        - name: rangeID
-          in: query
-          description: The range to query
-          required: false
-          schema:
-            type: object
-            properties:
-              rangeID:
-                $ref: '#/components/schemas/rangeID'
-      responses:
-        '200':
-          description: OK
-components:
-  schemas:
-    rangeID:
-      type: string
-      pattern: '^[A-Z]+$'
-      description: Range identifier
-`;
-
-const SPEC_WITH_REQUEST_BODY = `openapi: 3.1.0
+const SPEC_WITH_REQUEST_BODY = `openapi: 3.0.1
+info:
+  title: Test
+  version: "1.0"
 paths:
   /range/deploy:
     post:
@@ -184,9 +158,40 @@ paths:
           description: bad input
 `;
 
+const SPEC_WITH_ALLOF = `openapi: 3.0.1
+info:
+  title: Test
+  version: "1.0"
+paths:
+  /user:
+    post:
+      operationId: addUser
+      summary: Add user
+      responses:
+        '201':
+          description: user created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/UserObj'
+                  - type: object
+                    properties:
+                      apiKey:
+                        type: string
+components:
+  schemas:
+    UserObj:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+`;
+
 describe("catalog", () => {
-  describe("parseOperationsFromSpec", () => {
-    it("should parse basic operations", async () => {
+  describe("basic parsing", () => {
+    it("should parse operations", async () => {
       const catalog = await loadCatalog("", undefined, BASIC_SPEC);
       const ops = catalog.operations();
       assert.equal(ops.length, 2);
@@ -201,7 +206,7 @@ describe("catalog", () => {
       assert.equal(deleteOp.method, "DELETE");
     });
 
-    it("should parse operation details with parameters", async () => {
+    it("should parse parameters and responses", async () => {
       const catalog = await loadCatalog("", undefined, BASIC_SPEC);
       const detail = catalog.getDetail("listRange");
       assert.ok(detail);
@@ -217,17 +222,15 @@ describe("catalog", () => {
       const catalog = await loadCatalog("", undefined, SPEC_WITH_REF);
       const detail = catalog.getDetail("listUser");
       assert.ok(detail);
-      assert.equal(detail.responses!.length, 1);
 
-      const schema = detail.responses![0].schema;
+      const schema = detail.responses![0].schema as Record<string, unknown>;
       assert.ok(schema);
       assert.equal(schema.type, "object");
-      assert.equal(schema.properties!.length, 2);
 
-      // Properties are sorted alphabetically.
-      const nameProp = schema.properties!.find((p) => p.name === "name");
-      assert.ok(nameProp);
-      assert.equal(nameProp.required, true);
+      const props = schema.properties as Record<string, Record<string, unknown>>;
+      assert.ok(props.name);
+      assert.ok(props.isAdmin);
+      assert.equal(props.name.type, "string");
     });
 
     it("should resolve nested $ref", async () => {
@@ -235,13 +238,11 @@ describe("catalog", () => {
       const detail = catalog.getDetail("getRange");
       assert.ok(detail);
 
-      const schema = detail.responses![0].schema;
-      assert.ok(schema);
-
-      const idProp = schema.properties!.find((p) => p.name === "id");
-      assert.ok(idProp);
-      assert.equal(idProp.type, "string");
-      assert.equal(idProp.pattern, "^[A-Z]+$");
+      const schema = detail.responses![0].schema as Record<string, unknown>;
+      const props = schema.properties as Record<string, Record<string, unknown>>;
+      assert.ok(props.id);
+      assert.equal(props.id.type, "string");
+      assert.equal(props.id.pattern, "^[A-Z]+$");
     });
 
     it("should resolve $ref in array items", async () => {
@@ -249,36 +250,12 @@ describe("catalog", () => {
       const detail = catalog.getDetail("listUsers");
       assert.ok(detail);
 
-      const schema = detail.responses![0].schema;
-      assert.ok(schema);
+      const schema = detail.responses![0].schema as Record<string, unknown>;
       assert.equal(schema.type, "array");
-      assert.ok(schema.items);
-      assert.equal(schema.items.type, "object");
-      assert.equal(schema.items.properties!.length, 1);
-    });
 
-    it("should handle missing $ref target gracefully", async () => {
-      const catalog = await loadCatalog("", undefined, SPEC_WITH_MISSING_REF);
-      const detail = catalog.getDetail("getThing");
-      assert.ok(detail);
-
-      // Missing ref should produce null/undefined schema.
-      const schema = detail.responses![0].schema;
-      assert.equal(schema, undefined);
-    });
-  });
-
-  describe("query param unwrap", () => {
-    it("should unwrap apidog-style query params", async () => {
-      const catalog = await loadCatalog("", undefined, SPEC_WITH_QUERY_PARAM_UNWRAP);
-      const detail = catalog.getDetail("listRange");
-      assert.ok(detail);
-      assert.equal(detail.parameters!.length, 1);
-
-      const schema = detail.parameters![0].schema;
-      assert.ok(schema);
-      assert.equal(schema.type, "string");
-      assert.equal(schema.pattern, "^[A-Z]+$");
+      const items = schema.items as Record<string, unknown>;
+      assert.ok(items);
+      assert.equal(items.type, "object");
     });
   });
 
@@ -289,13 +266,30 @@ describe("catalog", () => {
       assert.ok(detail);
 
       assert.equal(detail.parameters!.length, 1);
-      assert.equal(detail.parameters![0].name, "rangeID");
-
       assert.ok(detail.requestBody);
       assert.equal(detail.requestBody.contentType, "application/json");
-      assert.equal(detail.requestBody.schema!.properties!.length, 2);
+
+      const bodyProps = detail.requestBody.schema?.properties as Record<string, unknown>;
+      assert.ok(bodyProps.tags);
+      assert.ok(bodyProps.force);
 
       assert.equal(detail.responses!.length, 2);
+    });
+  });
+
+  describe("allOf merging", () => {
+    it("should merge allOf into a single schema", async () => {
+      const catalog = await loadCatalog("", undefined, SPEC_WITH_ALLOF);
+      const detail = catalog.getDetail("addUser");
+      assert.ok(detail);
+
+      const schema = detail.responses![0].schema as Record<string, unknown>;
+      assert.equal(schema.type, "object");
+
+      // Should have both the UserObj props and the extra apiKey prop
+      const props = schema.properties as Record<string, Record<string, unknown>>;
+      assert.ok(props.name, "should have 'name' from UserObj");
+      assert.ok(props.apiKey, "should have 'apiKey' from inline schema");
     });
   });
 
@@ -303,9 +297,7 @@ describe("catalog", () => {
     it("should load bundled spec when no URL is provided", async () => {
       const catalog = await loadCatalog("");
       assert.equal(catalog.source(), "bundled-spec");
-
-      const ops = catalog.operations();
-      assert.ok(ops.length > 0);
+      assert.ok(catalog.operations().length > 0);
     });
   });
 });

@@ -209,7 +209,7 @@ async function buildFormData(
   return form;
 }
 
-export function normalizePath(path: string): string {
+function normalizePath(path: string): string {
   path = path.trim();
   if (!path) return "/";
   if (!path.startsWith("/")) {

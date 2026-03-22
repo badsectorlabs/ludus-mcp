@@ -86,15 +86,15 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 async function setupTestServer(catalog: Catalog, client: LudusClient) {
-  const mcpServer = createMcpServer(catalog, client);
+  const { server } = createMcpServer(catalog, client);
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
 
   const mcpClient = new Client({ name: "test-client", version: "1.0.0" });
-  await mcpServer.connect(serverTransport);
+  await server.connect(serverTransport);
   await mcpClient.connect(clientTransport);
 
-  return { mcpClient, mcpServer };
+  return { mcpClient, server };
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
