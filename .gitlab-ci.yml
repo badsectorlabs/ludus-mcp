@@ -1,0 +1,79 @@
+stages:
+  - test
+  - update-spec
+  - publish
+  - release
+
+###########
+#  TEST   #
+###########
+test:
+  stage: test
+  image: node:22
+  script:
+    - npm ci
+    - npm run build
+    - npm test
+
+###############
+# UPDATE SPEC #
+###############
+update-spec:
+  stage: update-spec
+  image: node:22
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - >
+      curl -s -X POST
+      "https://api.apidog.com/v1/projects/${APIDOG_PROJECT_ID}/export-openapi"
+      -H "Authorization: Bearer ${APIDOG_TOKEN}"
+      -H "X-Apidog-Api-Version: 2024-03-28"
+      -H "Content-Type: application/json"
+      -d '{"scope":{"type":"ALL"},"oasVersion":"3.0","exportFormat":"YAML"}'
+      -o src/openapi.yaml
+    - npm ci
+    - npm run build
+    - npm test
+  artifacts:
+    paths:
+      - build/
+
+###########
+# PUBLISH #
+###########
+publish:
+  stage: publish
+  image: node:22
+  needs:
+    - update-spec
+  rules:
+    - if: $CI_COMMIT_TAG && $CI_COMMIT_TAG !~ /beta/
+  script:
+    - echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
+    - npm publish --access public
+
+###########
+# RELEASE #
+###########
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs:
+    - publish
+  rules:
+    - if: $CI_COMMIT_TAG && $CI_COMMIT_TAG !~ /beta/
+  script:
+    - apk add --no-cache curl
+    - >
+      curl -sSL
+      "https://github.com/orhun/git-cliff/releases/download/v2.7.0/git-cliff-2.7.0-x86_64-unknown-linux-musl.tar.gz"
+      -o /tmp/git-cliff.tar.gz
+    - tar -xvzf /tmp/git-cliff.tar.gz -C /tmp
+    - mv /tmp/git-cliff-*/git-cliff /usr/local/bin/
+    - git-cliff -t ${CI_COMMIT_TAG} --current -o CHANGELOG.txt
+    - >
+      release-cli create
+      --name "ludus-mcp ${CI_COMMIT_TAG}"
+      --description CHANGELOG.txt
+      --tag-name ${CI_COMMIT_TAG}
