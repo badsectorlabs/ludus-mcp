@@ -1,7 +1,7 @@
 {
   "name": "@badsectorlabs/ludus-mcp",
   "version": "0.1.0",
-  "description": "MCP server for managing Ludus cyber ranges from AI coding assistants.",
+  "description": "MCP server for managing Ludus cyber ranges from AI assistants.",
   "type": "module",
   "bin": {
     "ludus-mcp": "./build/index.js"
@@ -30,5 +30,5 @@
   "engines": {
     "node": ">=20.18.1"
   },
-  "license": "BSL-1.1"
+  "license": "MIT"
 }
