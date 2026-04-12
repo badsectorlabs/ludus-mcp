@@ -46,8 +46,8 @@ publish:
   stage: publish
   image: node:22
   id_tokens:
-    NPM_TOKEN:
-      aud: https://registry.npmjs.org
+    SIGSTORE_ID_TOKEN:
+      aud: sigstore
   needs:
     - update-spec
   rules:
