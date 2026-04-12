@@ -293,6 +293,53 @@ describe("catalog", () => {
     });
   });
 
+  describe("multipart file annotation", () => {
+    const SPEC_WITH_MULTIPART = `openapi: 3.0.1
+info:
+  title: Test
+  version: "1.0"
+paths:
+  /range/config:
+    put:
+      operationId: putConfig
+      summary: Update config
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                force:
+                  type: boolean
+      responses:
+        '200':
+          description: OK
+`;
+
+    it("should annotate binary fields with file-path description", async () => {
+      const catalog = await loadCatalog("", undefined, SPEC_WITH_MULTIPART);
+      const detail = catalog.getDetail("putConfig");
+      assert.ok(detail);
+      assert.ok(detail.requestBody);
+      assert.equal(detail.requestBody.contentType, "multipart/form-data");
+
+      const props = detail.requestBody.schema?.properties as Record<
+        string,
+        Record<string, unknown>
+      >;
+      assert.ok(props.file);
+      assert.match(
+        props.file.description as string,
+        /local file path/i,
+      );
+      // Non-binary fields should not be annotated.
+      assert.equal(props.force.description, undefined);
+    });
+  });
+
   describe("bundled spec fallback", () => {
     it("should load bundled spec when no URL is provided", async () => {
       const catalog = await loadCatalog("");

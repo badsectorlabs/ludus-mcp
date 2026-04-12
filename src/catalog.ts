@@ -196,12 +196,24 @@ async function parseSpec(yamlText: string, source: string): Promise<Catalog> {
         if (rb.content) {
           for (const [ct, media] of Object.entries(rb.content)) {
             if (media.schema) {
-              detail.requestBody = {
-                contentType: ct,
-                schema: cleanSchema(
-                  media.schema as Record<string, unknown>,
-                ),
-              };
+              const schema = cleanSchema(
+                media.schema as Record<string, unknown>,
+              );
+              // Annotate multipart file fields so callers know to pass a path.
+              if (ct === "multipart/form-data") {
+                const props = schema.properties as
+                  | Record<string, Record<string, unknown>>
+                  | undefined;
+                if (props) {
+                  for (const [key, prop] of Object.entries(props)) {
+                    if (prop.format === "binary") {
+                      prop.description =
+                        `Local file path to upload${prop.description ? ` — ${prop.description}` : ""}`;
+                    }
+                  }
+                }
+              }
+              detail.requestBody = { contentType: ct, schema };
               break;
             }
           }

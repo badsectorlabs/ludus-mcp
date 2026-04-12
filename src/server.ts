@@ -205,7 +205,9 @@ export function createMcpServer(
     {
       title: "Call Ludus API",
       description:
-        "Execute a Ludus API operation by operation_id from list_ludus_operations.",
+        "Execute a Ludus API operation by operation_id from list_ludus_operations. " +
+        "For multipart/form-data operations, set content_type to 'multipart/form-data' " +
+        "and pass file fields as local file paths (not file contents) — the server reads the file from disk.",
       inputSchema: CallApiInputSchema,
       annotations: {
         readOnlyHint: false,
