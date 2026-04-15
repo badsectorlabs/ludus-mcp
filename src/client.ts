@@ -32,6 +32,14 @@ export interface ApiRequest {
   queryParams?: Record<string, string>;
   body?: unknown;
   contentType?: string;
+  /**
+   * Names of multipart body fields whose string values should be treated
+   * as local file paths to read and attach. If omitted when contentType
+   * is "multipart/form-data", the legacy behavior (only the literal key
+   * "file" is treated as a path) is preserved for backwards compatibility
+   * with direct client callers.
+   */
+  fileFields?: string[];
 }
 
 export interface ApiResponse {
@@ -70,7 +78,11 @@ export class LudusClient {
     };
 
     if (isMultipart) {
-      fetchBody = await buildFormData(req.body as Record<string, unknown>);
+      const fileFields = new Set(req.fileFields ?? ["file"]);
+      fetchBody = await buildFormData(
+        req.body as Record<string, unknown>,
+        fileFields,
+      );
       // Don't set Content-Type — fetch sets it with the boundary
     } else {
       const { bodyContent, resolvedContentType } = marshalBody(
@@ -186,18 +198,20 @@ function parseMaybeJSON(raw: string): unknown | null {
 }
 
 /**
- * Build a FormData object from a body map. If a field's key is "file" and
- * its value is a string, treat it as a local file path — read the file and
- * attach it as a Blob. All other fields are appended as strings.
+ * Build a FormData object from a body map. Fields whose key is in
+ * `fileFields` and whose value is a string are treated as local file
+ * paths — the file is read from disk and attached as a Blob. All other
+ * fields are appended as stringified form values.
  */
 async function buildFormData(
-  body?: Record<string, unknown>,
+  body: Record<string, unknown> | undefined,
+  fileFields: Set<string>,
 ): Promise<FormData> {
   const form = new FormData();
   if (!body) return form;
 
   for (const [key, value] of Object.entries(body)) {
-    if (key === "file" && typeof value === "string") {
+    if (fileFields.has(key) && typeof value === "string") {
       const fileBuffer = await readFile(value);
       const blob = new Blob([fileBuffer]);
       form.append(key, blob, basename(value));

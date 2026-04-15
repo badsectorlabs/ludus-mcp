@@ -205,7 +205,7 @@ async function parseSpec(yamlText: string, source: string): Promise<Catalog> {
                   | Record<string, Record<string, unknown>>
                   | undefined;
                 if (props) {
-                  for (const [key, prop] of Object.entries(props)) {
+                  for (const [, prop] of Object.entries(props)) {
                     if (prop.format === "binary") {
                       prop.description =
                         `Local file path to upload${prop.description ? ` — ${prop.description}` : ""}`;

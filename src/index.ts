@@ -49,7 +49,13 @@ async function main(): Promise<void> {
   let catalog = await loadCatalog("", apiKey);
 
   const client = new LudusClient(url, apiKey);
-  const { server, updateCatalog } = createMcpServer(catalog, client);
+  const specUrl = `${url}/api/v2/openapi`;
+  const refreshCatalog = () => loadCatalog(specUrl, apiKey);
+  const { server, updateCatalog } = createMcpServer(
+    catalog,
+    client,
+    refreshCatalog,
+  );
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -59,9 +65,8 @@ async function main(): Promise<void> {
   );
 
   // Try to upgrade to the remote spec after the server is connected.
-  const specUrl = `${url}/api/v2/openapi`;
   try {
-    const remoteCatalog = await loadCatalog(specUrl, apiKey);
+    const remoteCatalog = await refreshCatalog();
     updateCatalog(remoteCatalog);
     console.error(
       `ludus-mcp catalog upgraded (source: ${remoteCatalog.source()}, operations: ${remoteCatalog.operations().length})`,
