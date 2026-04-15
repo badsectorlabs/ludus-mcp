@@ -97,6 +97,19 @@ describe("LudusClient integration", () => {
           } else if (req.url === "/api/v2/text-response") {
             res.writeHead(200, { "Content-Type": "text/plain" });
             res.end("plain text response");
+          } else if (req.url === "/api/v2/zip") {
+            // Pretend to be a zip file — non-UTF8 bytes with binary CT.
+            res.writeHead(200, { "Content-Type": "application/zip" });
+            res.end(Buffer.from([0x50, 0x4b, 0x03, 0x04, 0xff, 0xfe, 0xfd]));
+          } else if (req.url === "/api/v2/bare-null") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end("null\n");
+          } else if (req.url === "/api/v2/bare-bool") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end("true");
+          } else if (req.url === "/api/v2/bare-number") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end("42");
           } else {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ result: "ok", received: body || null }));
@@ -230,6 +243,41 @@ describe("LudusClient integration", () => {
     });
 
     assert.equal(lastRequest.url, "/api/v2/range/my%20range%2Ftest");
+  });
+
+  it("should flag binary responses instead of returning mangled text", async () => {
+    const client = new LudusClient(baseUrl, "key");
+    const resp = await client.do({ method: "GET", path: "/zip" });
+
+    assert.equal(resp.statusCode, 200);
+    assert.equal(resp.success, true);
+    assert.ok(resp.binary, "binary metadata should be set");
+    assert.equal(resp.binary.contentType.startsWith("application/zip"), true);
+    assert.equal(resp.binary.size, 7);
+    assert.equal(resp.body, "", "raw body is not included for binary");
+    assert.equal(resp.json, null);
+  });
+
+  it("should parse bare JSON null", async () => {
+    const client = new LudusClient(baseUrl, "key");
+    const resp = await client.do({ method: "GET", path: "/bare-null" });
+    assert.equal(resp.json, null);
+    // resp.body is the raw "null\n" string; resp.json is parsed null.
+    // We can't distinguish this from a failed-parse in a test without
+    // checking body too — but the parse succeeded.
+    assert.equal(resp.body.trim(), "null");
+  });
+
+  it("should parse bare JSON boolean", async () => {
+    const client = new LudusClient(baseUrl, "key");
+    const resp = await client.do({ method: "GET", path: "/bare-bool" });
+    assert.equal(resp.json, true);
+  });
+
+  it("should parse bare JSON number", async () => {
+    const client = new LudusClient(baseUrl, "key");
+    const resp = await client.do({ method: "GET", path: "/bare-number" });
+    assert.equal(resp.json, 42);
   });
 
   it("should send multipart/form-data with file upload", async () => {

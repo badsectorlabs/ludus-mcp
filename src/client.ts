@@ -47,6 +47,18 @@ export interface ApiResponse {
   body: string;
   json: unknown | null;
   success: boolean;
+  /**
+   * Set when the response Content-Type indicates a non-text payload
+   * (zip, octet-stream, images, audio, video, pdf, etc.). The raw bytes
+   * are not returned through `body` because UTF-8-decoding binary data
+   * produces garbage — callers should fetch the endpoint directly with
+   * an HTTP client if they need the bytes, or extend the client to
+   * stream to disk.
+   */
+  binary?: {
+    contentType: string;
+    size: number;
+  };
 }
 
 export class LudusClient {
@@ -101,9 +113,25 @@ export class LudusClient {
       body: fetchBody,
     });
 
+    const respContentType = resp.headers.get("content-type") ?? "";
+    const statusCode = resp.status;
+
+    if (isBinaryContentType(respContentType)) {
+      const bytes = await resp.arrayBuffer();
+      return {
+        statusCode,
+        body: "",
+        json: null,
+        success: statusCode >= 200 && statusCode < 300,
+        binary: {
+          contentType: respContentType,
+          size: bytes.byteLength,
+        },
+      };
+    }
+
     const rawBody = await resp.text();
     const json = parseMaybeJSON(rawBody);
-    const statusCode = resp.status;
 
     return {
       statusCode,
@@ -187,14 +215,33 @@ function marshalBody(
 
 function parseMaybeJSON(raw: string): unknown | null {
   const trimmed = raw.trim();
-  if (!trimmed || (trimmed[0] !== "{" && trimmed[0] !== "[")) {
-    return null;
-  }
+  if (!trimmed) return null;
   try {
     return JSON.parse(trimmed);
   } catch {
     return null;
   }
+}
+
+/**
+ * Decide whether a response Content-Type should be treated as binary.
+ * Conservative — anything starting with `text/`, or one of the JSON /
+ * YAML / form / urlencoded families is treated as text. Everything else
+ * (application/zip, application/octet-stream, image/*, audio/*, etc.)
+ * is binary.
+ */
+function isBinaryContentType(contentType: string): boolean {
+  const ct = contentType.split(";")[0].trim().toLowerCase();
+  if (!ct) return false;
+  if (ct.startsWith("text/")) return false;
+  if (ct === "application/json" || ct.endsWith("+json")) return false;
+  if (ct === "application/yaml" || ct === "application/x-yaml") return false;
+  if (ct === "application/xml" || ct.endsWith("+xml")) return false;
+  if (ct === "application/x-www-form-urlencoded") return false;
+  if (ct === "application/javascript" || ct === "application/ecmascript") {
+    return false;
+  }
+  return true;
 }
 
 /**

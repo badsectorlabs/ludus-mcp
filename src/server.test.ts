@@ -596,6 +596,7 @@ describe("Improvements: call_ludus_api HTTP behavior", () => {
   };
   let nextStatus = 200;
   let nextBody: string | null = null;
+  let nextBinary: Buffer | null = null;
 
   before(async () => {
     await new Promise<void>((resolve) => {
@@ -610,6 +611,14 @@ describe("Improvements: call_ludus_api HTTP behavior", () => {
             body,
           };
           const status = nextStatus;
+          if (nextBinary) {
+            const bytes = nextBinary;
+            nextStatus = 200;
+            nextBinary = null;
+            res.writeHead(status, { "Content-Type": "application/zip" });
+            res.end(bytes);
+            return;
+          }
           const payload =
             nextBody ?? JSON.stringify({ result: "ok", received: body || null });
           nextStatus = 200;
@@ -738,6 +747,37 @@ describe("Improvements: call_ludus_api HTTP behavior", () => {
     const sent = JSON.parse(lastRequest.body);
     assert.equal(sent.force, true);
     assert.equal(sent.tags, "deploy");
+  });
+
+  it("surfaces binary response metadata instead of mangled text", async () => {
+    const catalog = await loadCatalog("", undefined, JSON_SPEC_WITH_PARAMS);
+    const client = new LudusClient(baseUrl, "key");
+    const { mcpClient } = await setupTestServer(catalog, client);
+
+    // 7-byte "zip" prelude with a non-UTF8 byte to prove we don't decode it.
+    nextBinary = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0xff, 0xfe, 0xfd]);
+
+    const result = await mcpClient.callTool({
+      name: "call_ludus_api",
+      arguments: {
+        operation_id: "deployRange",
+        path_params: { rangeId: "abc" },
+        body: {},
+      },
+    });
+
+    assert.equal(result.isError, false);
+    const parsed = JSON.parse(
+      (result.content as Array<{ type: string; text: string }>)[0].text,
+    );
+    assert.equal(parsed.status_code, 200);
+    assert.ok(parsed.response);
+    assert.equal(parsed.response.binary, true);
+    assert.ok(parsed.response.content_type.startsWith("application/zip"));
+    assert.equal(parsed.response.size_bytes, 7);
+    // The raw bytes must not leak into the response as a mangled string.
+    assert.equal(typeof parsed.response, "object");
+    assert.match(parsed.response.note, /binary/i);
   });
 
   it("accepts number and boolean query params and coerces to strings", async () => {

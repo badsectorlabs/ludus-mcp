@@ -311,7 +311,15 @@ export function createMcpServer(
           success: resp.success,
         };
 
-        if (resp.json !== null) {
+        if (resp.binary) {
+          result.response = {
+            binary: true,
+            content_type: resp.binary.contentType,
+            size_bytes: resp.binary.size,
+            note:
+              "Binary response body is not included. The endpoint returned a non-text payload; call the Ludus API directly (e.g. curl) if you need the bytes.",
+          };
+        } else if (resp.json !== null) {
           result.response = resp.json;
         } else if (resp.body) {
           result.response = resp.body;
