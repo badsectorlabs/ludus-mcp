@@ -799,6 +799,200 @@ describe("Improvements: call_ludus_api HTTP behavior", () => {
   });
 });
 
+describe("Improvements: destructive-op confirmation guard", () => {
+  const DESTRUCTIVE_SPEC = `openapi: "3.1.0"
+info:
+  title: Test
+  version: "1.0"
+paths:
+  /range/{rangeId}:
+    delete:
+      operationId: deleteRange
+      summary: Delete a range from the database and proxmox host
+      parameters:
+        - name: rangeId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: deleted
+  /snapshots/remove:
+    post:
+      operationId: snapshotsRemove
+      summary: Delete a snapshot from a VM or multiple VMs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        "200":
+          description: ok
+  /range/deploy:
+    post:
+      operationId: deployRange
+      summary: Deploy a range
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                force:
+                  type: boolean
+      responses:
+        "201":
+          description: ok
+`;
+
+  let server: Server;
+  let baseUrl: string;
+  let hitCount = 0;
+
+  before(async () => {
+    hitCount = 0;
+    await new Promise<void>((resolve) => {
+      server = createServer((_req, res) => {
+        hitCount++;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const addr = server.address();
+        if (addr && typeof addr === "object") {
+          baseUrl = `http://127.0.0.1:${addr.port}`;
+        }
+        resolve();
+      });
+    });
+  });
+
+  after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("returns a preview for DELETE ops without confirm, makes no HTTP call", async () => {
+    const catalog = await loadCatalog("", undefined, DESTRUCTIVE_SPEC);
+    const client = new LudusClient(baseUrl, "key");
+    const { mcpClient } = await setupTestServer(catalog, client);
+    const before = hitCount;
+
+    const result = await mcpClient.callTool({
+      name: "call_ludus_api",
+      arguments: {
+        operation_id: "deleteRange",
+        path_params: { rangeId: "prod" },
+      },
+    });
+
+    assert.equal(result.isError, false);
+    assert.equal(hitCount, before, "no HTTP request should have been made");
+    const parsed = JSON.parse(
+      (result.content as Array<{ type: string; text: string }>)[0].text,
+    );
+    assert.equal(parsed.confirmation_required, true);
+    assert.equal(parsed.method, "DELETE");
+    assert.equal(parsed.operation_id, "deleteRange");
+    assert.deepEqual(parsed.would_call_with.path_params, { rangeId: "prod" });
+    assert.match(parsed.note, /confirm: true/);
+  });
+
+  it("executes the DELETE when confirm:true is passed", async () => {
+    const catalog = await loadCatalog("", undefined, DESTRUCTIVE_SPEC);
+    const client = new LudusClient(baseUrl, "key");
+    const { mcpClient } = await setupTestServer(catalog, client);
+    const before = hitCount;
+
+    const result = await mcpClient.callTool({
+      name: "call_ludus_api",
+      arguments: {
+        operation_id: "deleteRange",
+        path_params: { rangeId: "prod" },
+        confirm: true,
+      },
+    });
+
+    assert.equal(result.isError, false);
+    assert.equal(hitCount, before + 1, "exactly one HTTP request should fire");
+    const parsed = JSON.parse(
+      (result.content as Array<{ type: string; text: string }>)[0].text,
+    );
+    assert.equal(parsed.confirmation_required, undefined);
+    assert.equal(parsed.status_code, 200);
+  });
+
+  it("guards named non-DELETE destructive ops (snapshotsRemove)", async () => {
+    const catalog = await loadCatalog("", undefined, DESTRUCTIVE_SPEC);
+    const client = new LudusClient(baseUrl, "key");
+    const { mcpClient } = await setupTestServer(catalog, client);
+    const before = hitCount;
+
+    const result = await mcpClient.callTool({
+      name: "call_ludus_api",
+      arguments: {
+        operation_id: "snapshotsRemove",
+        body: { name: "old-snap" },
+      },
+    });
+
+    assert.equal(hitCount, before, "no HTTP request should fire");
+    const parsed = JSON.parse(
+      (result.content as Array<{ type: string; text: string }>)[0].text,
+    );
+    assert.equal(parsed.confirmation_required, true);
+    assert.equal(parsed.method, "POST");
+    assert.deepEqual(parsed.would_call_with.body, { name: "old-snap" });
+  });
+
+  it("does not guard non-destructive mutations (deployRange)", async () => {
+    const catalog = await loadCatalog("", undefined, DESTRUCTIVE_SPEC);
+    const client = new LudusClient(baseUrl, "key");
+    const { mcpClient } = await setupTestServer(catalog, client);
+    const before = hitCount;
+
+    const result = await mcpClient.callTool({
+      name: "call_ludus_api",
+      arguments: {
+        operation_id: "deployRange",
+        body: { force: false },
+      },
+    });
+
+    assert.equal(hitCount, before + 1, "deployRange should execute without confirm");
+    const parsed = JSON.parse(
+      (result.content as Array<{ type: string; text: string }>)[0].text,
+    );
+    assert.equal(parsed.confirmation_required, undefined);
+    assert.equal(parsed.status_code, 200);
+  });
+
+  it("confirm:false is treated the same as missing confirm", async () => {
+    const catalog = await loadCatalog("", undefined, DESTRUCTIVE_SPEC);
+    const client = new LudusClient(baseUrl, "key");
+    const { mcpClient } = await setupTestServer(catalog, client);
+    const before = hitCount;
+
+    const result = await mcpClient.callTool({
+      name: "call_ludus_api",
+      arguments: {
+        operation_id: "deleteRange",
+        path_params: { rangeId: "prod" },
+        confirm: false,
+      },
+    });
+
+    assert.equal(hitCount, before, "no HTTP request should fire");
+    const parsed = JSON.parse(
+      (result.content as Array<{ type: string; text: string }>)[0].text,
+    );
+    assert.equal(parsed.confirmation_required, true);
+  });
+});
+
 describe("Improvements: refresh_ludus_catalog", () => {
   const SPEC_V1 = `openapi: "3.1.0"
 info:

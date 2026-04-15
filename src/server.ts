@@ -1,8 +1,32 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { Catalog, type OperationDetail } from "./catalog.js";
+import { Catalog, type Operation, type OperationDetail } from "./catalog.js";
 import { LudusClient } from "./client.js";
+
+/**
+ * Operations that require explicit `confirm: true` before executing.
+ * The guard catches the two categories where a mistaken call causes
+ * data loss or irreversible state changes:
+ *
+ *   1. All HTTP DELETE operations (handled by method check below).
+ *   2. The specific POST/PUT ops listed here that cause data loss
+ *      without being DELETEs.
+ *
+ * Long-running mutations like deployRange or buildTemplates are
+ * intentionally NOT guarded — they consume resources but are
+ * reversible, and guarding them would train agents to pass
+ * `confirm: true` reflexively, defeating the guard.
+ */
+const DESTRUCTIVE_OPERATION_IDS = new Set<string>([
+  "snapshotsRemove",
+  "snapshotsRollback",
+  "stopTesting",
+]);
+
+function isDestructiveOperation(op: Operation): boolean {
+  return op.method === "DELETE" || DESTRUCTIVE_OPERATION_IDS.has(op.id);
+}
 
 // ── Input schemas ─────────────────────────────────────────────────────
 
@@ -88,6 +112,12 @@ const CallApiInputSchema = z.object({
     .optional()
     .describe(
       "Request content type. If omitted, it is auto-detected from the operation's OpenAPI requestBody content type.",
+    ),
+  confirm: z
+    .boolean()
+    .optional()
+    .describe(
+      "Required for destructive operations (all DELETE methods plus snapshotsRemove, snapshotsRollback, stopTesting). If the operation is destructive and confirm is not true, the tool returns a preview instead of executing.",
     ),
 });
 
@@ -291,6 +321,34 @@ export function createMcpServer(
         resolvedContentType === "multipart/form-data"
           ? extractBinaryFieldNames(detail?.requestBody?.schema)
           : [];
+
+      // Destructive-operation guard: require an explicit confirm:true
+      // before executing. Returns a preview of what would be sent so
+      // the caller (or the user reviewing the agent's trace) can
+      // inspect the action before authorizing it.
+      if (isDestructiveOperation(op) && args.confirm !== true) {
+        const would_call_with: Record<string, unknown> = {};
+        if (args.path_params) would_call_with.path_params = args.path_params;
+        if (args.query_params) would_call_with.query_params = args.query_params;
+        if (args.body !== undefined) would_call_with.body = args.body;
+        if (resolvedContentType) {
+          would_call_with.content_type = resolvedContentType;
+        }
+        const preview = {
+          confirmation_required: true,
+          operation_id: op.id,
+          method: op.method,
+          path: op.path,
+          summary: op.summary,
+          would_call_with,
+          note:
+            "This operation is destructive and may cause data loss or irreversible state changes. Re-submit the exact same arguments with `confirm: true` to execute.",
+        };
+        return {
+          isError: false,
+          content: [{ type: "text", text: JSON.stringify(preview, null, 2) }],
+        };
+      }
 
       try {
         const resp = await client.do({
