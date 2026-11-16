@@ -286,7 +286,7 @@ describe("MCP Server", () => {
   });
 
   describe("tool listing", () => {
-    it("should register all three tools", async () => {
+    it("should register all tools", async () => {
       const catalog = await loadCatalog("", undefined, SPEC);
       const client = new LudusClient("https://localhost:8080", "test-key");
       const { mcpClient } = await setupTestServer(catalog, client);
@@ -295,8 +295,11 @@ describe("MCP Server", () => {
       const names = tools.tools.map((t) => t.name).sort();
       assert.deepEqual(names, [
         "call_ludus_api",
+        "call_plugin_operation",
         "describe_ludus_operation",
+        "describe_ludus_plugin",
         "list_ludus_operations",
+        "list_ludus_plugins",
       ]);
     });
 
@@ -1077,6 +1080,227 @@ paths:
     assert.ok(
       parsed.operations.some(
         (op: { operation_id: string }) => op.operation_id === "v2Added",
+      ),
+    );
+  });
+});
+
+describe("plugin tools", () => {
+  const PLUGIN = {
+    id: "autoexecute",
+    resourceID: "res1",
+    name: "Autoexecute",
+    version: "1.2.0",
+    description: "Run commands on range VMs",
+    rangeScoped: true,
+    state: "running",
+    added: true,
+  };
+  const PLUGINS = [
+    PLUGIN,
+    { ...PLUGIN, id: "stopped", resourceID: "res2", state: "stopped" },
+    { ...PLUGIN, id: "hidden", resourceID: "res3", added: false },
+    { ...PLUGIN, id: "twice", resourceID: "dup1", rangeScoped: false },
+    { ...PLUGIN, id: "twice", resourceID: "dup2", rangeScoped: false },
+  ];
+  const PLUGIN_DOC = {
+    openapi: "3.0.3",
+    info: { title: "Autoexecute", version: "1.2.0", description: "Runs commands." },
+    paths: {
+      "/jobs": {
+        get: {
+          operationId: "listJobs",
+          summary: "List jobs",
+          parameters: [
+            { name: "rangeID", in: "query", schema: { type: "string" } },
+            { name: "limit", in: "query", schema: { type: "integer" } },
+          ],
+          responses: { "200": { description: "jobs" } },
+        },
+        post: {
+          operationId: "runCommand",
+          summary: "Run a command",
+          requestBody: {
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/Command" },
+              },
+            },
+          },
+          responses: { "202": { description: "started" } },
+        },
+        delete: {
+          operationId: "clearJobs",
+          summary: "Clear finished jobs",
+          responses: { "200": { description: "cleared" } },
+        },
+      },
+      "/../admin": {
+        get: { operationId: "escape", responses: { "200": { description: "x" } } },
+      },
+    },
+    components: {
+      schemas: {
+        Command: {
+          type: "object",
+          required: ["command"],
+          properties: {
+            command: { type: "string" },
+            // Must stay unresolved: plugin documents may not read local files.
+            extra: { $ref: "./does-not-exist.json" },
+          },
+        },
+      },
+    },
+  };
+
+  let server: Server;
+  let baseUrl: string;
+  let requests: Array<{ method: string; url: string; body: string }> = [];
+
+  before(async () => {
+    await new Promise<void>((resolve) => {
+      server = createServer((req, res) => {
+        let body = "";
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", () => {
+          const url = req.url ?? "";
+          requests.push({ method: req.method ?? "", url, body });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          if (url === "/api/v2/plugins") {
+            res.end(JSON.stringify({ plugins: PLUGINS }));
+          } else if (url.startsWith("/api/v2/plugins/res1/rpc/openapi.json")) {
+            res.end(JSON.stringify(PLUGIN_DOC));
+          } else {
+            res.end(JSON.stringify({ ok: true }));
+          }
+        });
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const addr = server.address();
+        if (addr && typeof addr === "object") {
+          baseUrl = `http://127.0.0.1:${addr.port}`;
+        }
+        resolve();
+      });
+    });
+  });
+
+  after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  async function setup() {
+    requests = [];
+    const catalog = await loadCatalog("", undefined, SPEC);
+    return (await setupTestServer(catalog, new LudusClient(baseUrl, "key")))
+      .mcpClient;
+  }
+
+  function text(result: { content?: unknown }): string {
+    return (result.content as Array<{ type: string; text: string }>)[0].text;
+  }
+
+  it("lists only running plugins the user has added", async () => {
+    const mcpClient = await setup();
+    const result = await mcpClient.callTool({
+      name: "list_ludus_plugins",
+      arguments: {},
+    });
+    const { plugins } = JSON.parse(text(result));
+    assert.deepEqual(
+      plugins.map((p: { resource_id: string }) => p.resource_id),
+      ["res1", "dup1", "dup2"],
+    );
+    assert.equal(plugins[0].range_scoped, true);
+  });
+
+  it("refuses to guess a range or pick between duplicate installs", async () => {
+    const mcpClient = await setup();
+    const noRange = await mcpClient.callTool({
+      name: "describe_ludus_plugin",
+      arguments: { plugin: "autoexecute" },
+    });
+    assert.equal(noRange.isError, true);
+    assert.match(text(noRange), /range-scoped: pass range_id/);
+
+    const dup = await mcpClient.callTool({
+      name: "describe_ludus_plugin",
+      arguments: { plugin: "twice" },
+    });
+    assert.equal(dup.isError, true);
+    assert.match(text(dup), /pass the resource_id/);
+    assert.ok(requests.every((r) => r.url === "/api/v2/plugins"));
+  });
+
+  it("describes literal plugin routes without rangeID, responses, or external refs", async () => {
+    const mcpClient = await setup();
+    const result = await mcpClient.callTool({
+      name: "describe_ludus_plugin",
+      arguments: { plugin: "autoexecute", range_id: "r1" },
+    });
+    assert.notEqual(result.isError, true, text(result));
+    assert.ok(
+      requests.some(
+        (r) => r.url === "/api/v2/plugins/res1/rpc/openapi.json?rangeID=r1",
+      ),
+    );
+    const doc = JSON.parse(text(result));
+    assert.equal(doc.description, "Runs commands.");
+    const byId = Object.fromEntries(
+      doc.operations.map((op: { operation_id: string }) => [op.operation_id, op]),
+    );
+    assert.deepEqual(Object.keys(byId).sort(), ["clearJobs", "listJobs", "runCommand"]);
+    assert.deepEqual(
+      byId.listJobs.parameters.map((p: { name: string }) => p.name),
+      ["limit"],
+    );
+    assert.equal(byId.listJobs.responses, undefined);
+    assert.deepEqual(byId.runCommand.body.required, ["command"]);
+    assert.deepEqual(byId.runCommand.body.properties.extra, {
+      $ref: "./does-not-exist.json",
+    });
+  });
+
+  it("calls an operation through the plugin RPC path with range_id", async () => {
+    const mcpClient = await setup();
+    const result = await mcpClient.callTool({
+      name: "call_plugin_operation",
+      arguments: {
+        plugin: "res1",
+        operation_id: "runCommand",
+        range_id: "r1",
+        query_params: { rangeID: "other", wait: true },
+        body: { command: "whoami" },
+      },
+    });
+    assert.notEqual(result.isError, true, text(result));
+    const call = requests.find((r) => r.method === "POST");
+    assert.ok(call);
+    assert.equal(call.url, "/api/v2/plugins/res1/rpc/jobs?rangeID=r1&wait=true");
+    assert.deepEqual(JSON.parse(call.body), { command: "whoami" });
+    const parsed = JSON.parse(text(result));
+    assert.equal(parsed.status_code, 200);
+    assert.deepEqual(parsed.response, { ok: true });
+  });
+
+  it("previews DELETE operations until confirm is true", async () => {
+    const mcpClient = await setup();
+    const args = { plugin: "autoexecute", operation_id: "clearJobs", range_id: "r1" };
+    const preview = await mcpClient.callTool({
+      name: "call_plugin_operation",
+      arguments: args,
+    });
+    assert.equal(JSON.parse(text(preview)).confirmation_required, true);
+    assert.ok(!requests.some((r) => r.method === "DELETE"));
+
+    await mcpClient.callTool({
+      name: "call_plugin_operation",
+      arguments: { ...args, confirm: true },
+    });
+    assert.ok(
+      requests.some(
+        (r) => r.method === "DELETE" && r.url === "/api/v2/plugins/res1/rpc/jobs?rangeID=r1",
       ),
     );
   });

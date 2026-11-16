@@ -133,12 +133,18 @@ export async function loadCatalog(
 
 const METHODS = ["get", "post", "put", "patch", "delete"] as const;
 
-async function parseSpec(yamlText: string, source: string): Promise<Catalog> {
+export async function parseSpec(
+  yamlText: string,
+  source: string,
+  resolveExternalRefs = true,
+): Promise<Catalog> {
   // swagger-parser can parse YAML directly from a string via a dummy path
   // but it needs an object. Parse YAML ourselves, then dereference.
   const { default: YAML } = await import("yaml");
   const raw = YAML.parse(yamlText) as OpenAPI.Document;
-  const api = (await SwaggerParser.dereference(raw)) as OpenAPIV3.Document;
+  const api = (await SwaggerParser.dereference(raw, {
+    resolve: { external: resolveExternalRefs },
+  })) as OpenAPIV3.Document;
 
   if (!api.paths || Object.keys(api.paths).length === 0) {
     throw new Error("OpenAPI spec has no paths");
